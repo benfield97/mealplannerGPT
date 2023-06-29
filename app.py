@@ -1,14 +1,17 @@
 import os 
-from apikey import apikey
+from apikey import apikey, replicate
 import streamlit as st
 from langchain.llms import OpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain, SequentialChain
 from langchain.memory import ConversationBufferMemory
+import replicate as rp
 
 os.environ['OPENAI_API_KEY'] = apikey
+os.environ['REPLICATE_API_TOKEN'] = replicate
 
 
+# user interface 
 st.title('🍝 Meal Planner 🥗')
 st.subheader('Plan meals, get recipes, and make shopping lists with OpenAI')
 
@@ -17,18 +20,29 @@ nogo = st.text_input('Enter any foods you don\'t want to eat. E.g. broccoli, tof
 days = st.slider('How many days do you want to plan for?', 1, 7, 3)
 meals = st.multiselect('What meals do you want to plan?', ['Breakfast', 'Lunch', 'Dinner'])
 
+
+# Meal name tempalte
 meals_prompt = """You are an expert chef that can cater to any preference.
-You are constructing a {days}-day meal plan for a client that includes {meals}.
+You are constructing a {days}-day meal plan for a client that includes only the following meals: {meals}.
 
 Plan the meals around the following criteria: 
 {criteria}. 
 
 Avoid using the following foods: 
 {nogo}.
-"""
 
+Provide only the title of each meal.
+Provide only a single option for each meal. 
+Make sure to provide output in chronological order.
+
+Example:
+
+Day 1: Breakfast: Eggs Benedict
+Day 1: Lunch: Chicken Caesar Salad
+"""
 meals_template = PromptTemplate(template=meals_prompt, input_variables=['days', 'meals', 'criteria', 'nogo'])
 
+# recipe template
 recipes_prompt = """You are an expert chef who excels at writing detailed and clear recipes.
 Based on the following meal titles, write out a recipe for each one. List quantities and exact steps. 
 Meals:
@@ -44,7 +58,7 @@ Suggest when an ingredient may already be in the pantry.
 """
 shopping_template = PromptTemplate(template=shopping_prompt, input_variables=['recipes'])
 
-llm = OpenAI(temperature=0.5)
+llm = OpenAI(temperature=0.1, max_tokens=500)
 
 mealchain = LLMChain(llm=llm, prompt=meals_template, output_key='meal_output')
 recipechain = LLMChain(llm=llm, prompt=recipes_template, output_key='recipes')
@@ -58,27 +72,29 @@ textchain = SequentialChain(chains=[mealchain, recipechain, shoppingchain],
 if st.button('Generate'):
     if criteria and nogo and days and meals:
         with st.spinner('Generating response...'):
-            results = textchain({
-                'days': days,
-                'meals': meals,
-                'criteria': criteria,
-                'nogo': nogo})
-            
-            st.subheader('Meals')
-            #st.write(results['meal_output'])
-            meals_by_day = results['meal_output'].split("[\\r\\n]+")
-            st.write(meals_by_day[0])
-            
-            st.subheader('Recipes')
-            st.write(results['recipes'])
-            st.subheader('Shopping List')
-            st.write(results['shopping'])
+            meal_output = mealchain.run(days=days, meals=meals, criteria=criteria, nogo=nogo)
 
-            # check that the ingredients list is actually full 
-            # split up meal list into individual meals and generate images
+            meal_output = meal_output.splitlines()
+            meal_output = [i for i in meal_output if i]
+            meal_list = []
+            recipe_list = []
+            for meal in meal_output:
+                meal_list.append(meal.split(': ')[2])
+            
+            for meal in meal_list:
+                recipe = recipechain.run(meal_output=meal)
+                recipe_list.append(recipe)
+
+            for i in range(len(meal_output)):
+                st.subheader(meal_output[i])
+
+                photo = rp.run("stability-ai/stable-diffusion:db21e45d3f7023abc2a46ee38a23973f6dce16bb082a930b0c49861f96d1e5bf",
+                        input={"prompt": f"{meal_list[i]}. Ultra realistic photography, high defintion, recipe photo. HDSLR."})
+                st.image(photo)
+                
+                st.write(recipe_list[i])             
 
     else:
         st.warning('Please fill in all the fields before generating')
 
 
-# need to learn how to work with chain outputs much better. The initial prompt works really well, but the rest is a mess.
